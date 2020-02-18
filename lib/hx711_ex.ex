@@ -5,15 +5,17 @@ defmodule Hx711Ex.WeightSensor do
 
   use GenServer
 
-  # alias Claw.Logger
   alias Circuits.GPIO
   use Bitwise
 
-  # @read_buffer 1_000
-  # @timeout 1_000
+  alias Hx711Ex.WeightSensor.Errors.ReadTimeoutError
+  # alias Hx711Ex.WeightSensor.Errors.ReadError
+  alias Hx711Ex.WeightSensor.Errors.ReadInProgressError
+
   @clk_pin 4
   @data_pin 24
   @sleep_time 1_000_000
+  @read_timeout 2_000
 
   defmodule State do
     defstruct [
@@ -43,21 +45,14 @@ defmodule Hx711Ex.WeightSensor do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  def read(pid, opts \\ []) do
+  def read(server, opts \\ []) do
     clk_pin = Keyword.get(opts, :clk_pin, @clk_pin)
     data_pin = Keyword.get(opts, :data_pin, @data_pin)
-    GenServer.call(pid, {:read, clk_pin, data_pin}, nil)
+    GenServer.call(server, {:read, clk_pin, data_pin}, nil)
   end
 
-  # def set_gain(state) do
-  #   deactivate(state.clk_pink)
-  #   read()
-  # end
-
-  # defp read_timeout(timeout), do: timeout + @read_buffer
-
+  @impl GenServer
   def init(opts) do
-    # opts = Keyword.put_new_lazy(opts, :cmd, fn -> default_cmd(default_cmd_opts) end)
     state = struct(State, opts)
     # set input/output pins
     clk_pin = Keyword.get(opts, :clk_pin, @clk_pin)
@@ -67,6 +62,81 @@ defmodule Hx711Ex.WeightSensor do
     Circuits.GPIO.open(data_pin, :input)
 
     {:ok, state}
+  end
+
+  @impl GenServer
+  def handle_call({:read, _timeout, _power}, _from, %{read_in_progress?: true} = state) do
+    {:reply, {:error, %ReadInProgressError{}}, state}
+  end
+
+  def handle_call({:read, clk_pin, data_pin}, from, state) do
+    IO.inspect("clk_pin")
+    IO.inspect(clk_pin)
+    IO.inspect("data_pin")
+    IO.inspect(data_pin)
+    IO.inspect("state")
+    IO.inspect(state)
+    pid = self()
+    ref = make_ref()
+
+    spawn(fn -> send(pid, {:handle_result, read_raw_data(state), ref}) end)
+    Process.send_after(self(), {:timeout, from}, @read_timeout)
+
+    {:noreply, %{state | read_in_progress?: true, ref: ref}}
+  end
+
+  @impl GenServer
+  def handle_info({:timeout, from}, %{result: nil} = state) do
+    GenServer.reply(from, {:error, %ReadTimeoutError{}})
+
+    {:noreply, reset(state)}
+  end
+
+  # @impl GenServer
+  # def handle_info({:timeout, from}, %{result: nil} = state) do
+  #   Process.send_after(self(), {:timeout, from}, @retry_interval)
+  #
+  #   {:noreply, state}
+  # end
+
+  @impl GenServer
+  def handle_info({:timeout, from}, state) do
+    result = handle_result(state.result)
+    GenServer.reply(from, result)
+
+    {:noreply, reset(state)}
+  end
+
+  def handle_info({:handle_result, result}, state) do
+    IO.inspect("RESULT IS")
+    IO.inspect(result)
+    result = handle_result(state.result)
+    # GenServer.reply(from, result)
+    {:noreply, %{state | result: result, read_in_progress?: false}}
+  end
+
+  @impl GenServer
+  def handle_info({:handle_result, result, ref}, %{ref: ref} = state) do
+    {:noreply, %{state | result: result}}
+  end
+
+  def handle_info({:handle_result, _result, _ref}, state) do
+    {:noreply, state}
+  end
+
+  defp handle_result({result, 0}) do
+    read_res = result |> String.trim_trailing() |> String.split("\n") |> Enum.drop(5)
+
+    IO.inspect(read_res)
+
+    {:ok, read_res}
+  end
+
+  defp handle_result({_result, 1}), do: {:ok, []}
+
+  defp handle_result(result) do
+    # {:error, %ReadError{}}
+    {:error, result}
   end
 
   def set_clock_high_and_low(state) do
@@ -177,48 +247,6 @@ defmodule Hx711Ex.WeightSensor do
     {:ok, %{state | weight_currently: mean}}
   end
 
-  # def handle_call({:read, clk_pin, data_pin}, _from, state) do
-  #   IO.inspect("clk_pin")
-  #   IO.inspect(clk_pin)
-  #   IO.inspect("data_pin")
-  #   IO.inspect(data_pin)
-  #   IO.inspect("state")
-  #   IO.inspect(state)
-  #   pid = self()
-  #
-  #   # result = read_gpio(state.clk_pin)
-  #   result = read_gpio(state.data_pin)
-  #
-  #   spawn(fn -> send(pid, {:handle_result, result}) end)
-  #   # Process.send_after(self(), {:timeout, from}, timeout)
-  #
-  #   {:noreply, %{state | read_in_progress?: true}}
-  # end
-
-  # def handle_info({:handle_result, result}, state) do
-  #   IO.inspect("RESULT IS")
-  #   IO.inspect(result)
-  #   result = handle_result(state.result)
-  #   # GenServer.reply(from, result)
-  #   {:noreply, %{state | result: result, read_in_progress?: false}}
-  # end
-  #
-  # defp handle_result({result, 0}) do
-  #   read_res = result |> String.trim_trailing() |> String.split("\n") |> Enum.drop(5)
-  #
-  #   IO.inspect(read_res)
-  #
-  #   {:ok, read_res}
-  # end
-  #
-  # defp handle_result({_result, 1}), do: {:ok, []}
-  #
-  # defp handle_result(result) do
-  #   Logger.error(:unexpected_weight_read, result: result)
-  #
-  #   {:error, result}
-  # end
-
   def activate(pin) do
     GPIO.write(pin, 1)
   end
@@ -229,5 +257,10 @@ defmodule Hx711Ex.WeightSensor do
 
   def read_pin(pin) do
     GPIO.read(pin)
+  end
+
+  defp reset(state) do
+    reset_hx(state)
+    %{state | result: nil, read_in_progress?: false, ref: nil}
   end
 end
