@@ -16,6 +16,8 @@ defmodule Hx711Ex.WeightSensor do
   @data_pin 24
   @sleep_time 1_000_000
   @read_timeout 2_000
+  @readings_number 24
+  @num_pulses 1
 
   defmodule State do
     defstruct [
@@ -30,13 +32,9 @@ defmodule Hx711Ex.WeightSensor do
       :signed_data,
       read_in_progress?: false,
       something_there?: false,
-      numEndPulses: 1,
+      num_pulses: 1,
       number_of_readings: 30
     ]
-  end
-
-  def hello() do
-    :world
   end
 
   def start_link(opts \\ []) do
@@ -53,13 +51,18 @@ defmodule Hx711Ex.WeightSensor do
 
   @impl GenServer
   def init(opts) do
-    state = struct(State, opts)
     # set input/output pins
     clk_pin = Keyword.get(opts, :clk_pin, @clk_pin)
     data_pin = Keyword.get(opts, :data_pin, @data_pin)
 
-    Circuits.GPIO.open(clk_pin, :output)
-    Circuits.GPIO.open(data_pin, :input)
+    {:ok, clk_pin} = Circuits.GPIO.open(clk_pin, :output)
+    {:ok, data_pin} = Circuits.GPIO.open(data_pin, :input)
+    opts = Keyword.put_new(opts, :clk_pin, clk_pin)
+    opts = Keyword.put_new(opts, :data_pin, data_pin)
+    opts = Keyword.put_new(opts, :number_of_readings, @readings_number)
+    opts = Keyword.put_new(opts, :number_of_pulses, @num_pulses)
+
+    state = struct(State, opts)
 
     {:ok, state}
   end
@@ -79,64 +82,51 @@ defmodule Hx711Ex.WeightSensor do
     pid = self()
     ref = make_ref()
 
-    spawn(fn -> send(pid, {:handle_result, read_raw_data(state), ref}) end)
+    spawn(fn -> send(pid, {:handle_weight, read_raw_data_mean(state), ref}) end)
     Process.send_after(self(), {:timeout, from}, @read_timeout)
 
     {:noreply, %{state | read_in_progress?: true, ref: ref}}
   end
 
   @impl GenServer
-  def handle_info({:timeout, from}, %{result: nil} = state) do
+  def handle_info({:timeout, from}, %{weight: nil} = state) do
     GenServer.reply(from, {:error, %ReadTimeoutError{}})
 
     {:noreply, reset(state)}
   end
 
-  # @impl GenServer
-  # def handle_info({:timeout, from}, %{result: nil} = state) do
-  #   Process.send_after(self(), {:timeout, from}, @retry_interval)
-  #
-  #   {:noreply, state}
-  # end
-
   @impl GenServer
   def handle_info({:timeout, from}, state) do
-    result = handle_result(state.result)
-    GenServer.reply(from, result)
+    weight = handle_weight(state.weight)
+    GenServer.reply(from, weight)
 
     {:noreply, reset(state)}
   end
 
-  def handle_info({:handle_result, result}, state) do
+  def handle_info({:handle_weight, weight}, state) do
     IO.inspect("RESULT IS")
-    IO.inspect(result)
-    result = handle_result(state.result)
-    # GenServer.reply(from, result)
-    {:noreply, %{state | result: result, read_in_progress?: false}}
+    IO.inspect(weight)
+    weight = handle_weight(state.weight)
+    # GenServer.reply(from, weight)
+    {:noreply, %{state | weight: weight, read_in_progress?: false}}
   end
 
   @impl GenServer
-  def handle_info({:handle_result, result, ref}, %{ref: ref} = state) do
-    {:noreply, %{state | result: result}}
+  def handle_info({:handle_weight, weight, ref}, %{ref: ref} = state) do
+    {:noreply, %{state | weight: weight}}
   end
 
-  def handle_info({:handle_result, _result, _ref}, state) do
+  def handle_info({:handle_weight, _weight, _ref}, state) do
     {:noreply, state}
   end
 
-  defp handle_result({result, 0}) do
-    read_res = result |> String.trim_trailing() |> String.split("\n") |> Enum.drop(5)
-
-    IO.inspect(read_res)
-
-    {:ok, read_res}
+  defp handle_weight({:ok, weight}) do
+    {:ok, weight}
   end
 
-  defp handle_result({_result, 1}), do: {:ok, []}
-
-  defp handle_result(result) do
+  defp handle_weight(weight) do
     # {:error, %ReadError{}}
-    {:error, result}
+    {:error, weight}
   end
 
   def set_clock_high_and_low(state) do
@@ -192,21 +182,18 @@ defmodule Hx711Ex.WeightSensor do
     data_in = 0
     # 24 is used in all instances, as number of bits in data, need to pad out and convert.
     0..24
-    |> Enum.reduce(
-      fn _item, acc ->
-        set_clock_high_and_low(state)
+    |> Enum.reduce(data_in, fn _item, acc ->
+      set_clock_high_and_low(state)
 
-        # Shift the bits as they come to data_in variable.
-        # Left shift by one bit then bitwise OR with the new bit.
-        read_data = read_pin(state.data_pin)
-        left_shifted_data = acc <<< 2
-        left_shifted_data ||| read_data
-      end,
-      data_in
-    )
+      # Shift the bits as they come to data_in variable.
+      # Left shift by one bit then bitwise OR with the new bit.
+      read_data = read_pin(state.data_pin)
+      left_shifted_data = acc <<< 2
+      left_shifted_data ||| read_data
+    end)
 
     # need to repulse
-    0..state.numPulses
+    0..state.num_pulses
     |> Enum.each(fn _item ->
       set_clock_high_and_low(state)
     end)
@@ -226,25 +213,29 @@ defmodule Hx711Ex.WeightSensor do
         _ -> data_in
       end
 
-    {:ok, %{state | signed_data: signed_data}}
+    # {:ok, %{state | signed_data: signed_data}}
+    {:ok, signed_data}
   end
 
   def read_raw_data_mean(state) do
     all_readings =
       0..state.number_of_readings
-      |> Enum.reduce(
-        fn _reading, acc ->
-          acc ++ [read_raw_data(state)]
-        end,
-        []
-      )
+      |> Enum.reduce([], fn _reading, acc ->
+        {:ok, signed_data} = read_raw_data(state)
+        acc ++ [signed_data]
+      end)
 
-    total = all_readings |> Enum.reduce(fn reading, acc -> acc + reading end, 0)
+    total =
+      all_readings
+      |> Enum.reduce(0, fn reading, acc ->
+        acc + reading
+      end)
 
+    IO.inspect(total)
     mean = total / (all_readings |> length())
     IO.inspect(mean)
 
-    {:ok, %{state | weight_currently: mean}}
+    {:ok, mean}
   end
 
   def activate(pin) do
@@ -261,6 +252,6 @@ defmodule Hx711Ex.WeightSensor do
 
   defp reset(state) do
     reset_hx(state)
-    %{state | result: nil, read_in_progress?: false, ref: nil}
+    %{state | weight: nil, read_in_progress?: false, ref: nil}
   end
 end
