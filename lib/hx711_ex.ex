@@ -33,6 +33,7 @@ defmodule Hx711Ex.WeightSensor do
       :weight_currently,
       :gain,
       :channel,
+      :ref,
       :signed_data,
       read_in_progress?: false,
       something_there?: false,
@@ -295,6 +296,6 @@ defmodule Hx711Ex.WeightSensor do
 
   defp reset(state) do
     reset_hx(state)
-    %{state | weight: nil, read_in_progress?: false, ref: nil}
+    {:ok, %{state | weight_currently: nil, read_in_progress?: false, ref: nil}}
   end
 end
