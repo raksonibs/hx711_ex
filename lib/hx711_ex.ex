@@ -8,9 +8,9 @@ defmodule Hx711Ex.WeightSensor do
   alias Circuits.GPIO
   use Bitwise
 
-  alias Hx711Ex.WeightSensor.Errors.ReadTimeoutError
+  #  alias Hx711Ex.WeightSensor.Errors.ReadTimeoutError
   # alias Hx711Ex.WeightSensor.Errors.ReadError
-  alias Hx711Ex.WeightSensor.Errors.ReadInProgressError
+  #  alias Hx711Ex.WeightSensor.Errors.ReadInProgressError
 
   @clk_pin 4
   @data_pin 24
@@ -69,7 +69,7 @@ defmodule Hx711Ex.WeightSensor do
 
   @impl GenServer
   def handle_call({:read, _timeout, _power}, _from, %{read_in_progress?: true} = state) do
-    {:reply, {:error, %ReadInProgressError{}}, state}
+    {:reply, {:error, :read_error}, state}
   end
 
   def handle_call({:read, clk_pin, data_pin}, from, state) do
@@ -89,8 +89,8 @@ defmodule Hx711Ex.WeightSensor do
   end
 
   @impl GenServer
-  def handle_info({:timeout, from}, %{weight: nil} = state) do
-    GenServer.reply(from, {:error, %ReadTimeoutError{}})
+  def handle_info({:timeout, _from}, %{weight: nil} = state) do
+    # GenServer.reply(from, {:error, %ReadTimeoutError{}})
 
     {:noreply, reset(state)}
   end
