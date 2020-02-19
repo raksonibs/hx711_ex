@@ -12,29 +12,24 @@ defmodule Hx711Ex.WeightSensor do
   alias Circuits.GPIO
   use Bitwise
 
-  #  alias Hx711Ex.WeightSensor.Errors.ReadTimeoutError
-  # alias Hx711Ex.WeightSensor.Errors.ReadError
-  #  alias Hx711Ex.WeightSensor.Errors.ReadInProgressError
+  alias Hx711Ex.WeightSensor.Errors.ReadTimeoutError
+  alias Hx711Ex.WeightSensor.Errors.ReadError
+
+  # alias Hx711Ex.WeightSensor.Errors.ReadInProgressError
 
   @clk_pin 4
   @data_pin 24
   @sleep_time 1_000_000
-  @read_timeout 2_000
-  @readings_number 10
+  @readings_number 2
   @num_pulses 1
 
   defmodule State do
     defstruct [
       :clk_pin,
       :data_pin,
-      :difference_weight,
       :weight_before,
-      :weight_after,
       :weight_currently,
-      :gain,
-      :channel,
       :ref,
-      :signed_data,
       read_in_progress?: false,
       something_there?: false,
       num_pulses: 1,
@@ -48,10 +43,8 @@ defmodule Hx711Ex.WeightSensor do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  def read(server, opts \\ []) do
-    clk_pin = Keyword.get(opts, :clk_pin, @clk_pin)
-    data_pin = Keyword.get(opts, :data_pin, @data_pin)
-    GenServer.call(server, {:read, clk_pin, data_pin}, nil)
+  def read(server, _opts \\ []) do
+    GenServer.call(server, :read)
   end
 
   @impl GenServer
@@ -70,61 +63,56 @@ defmodule Hx711Ex.WeightSensor do
     state = struct(State, opts)
     reset(state)
 
-    {:ok, state}
+    # do a weight reading before, and then compare with weight reading after
+    {:ok, weight_before} = read_raw_data(state)
+    reset(state)
+
+    {:ok, %{state | weight_before: weight_before, something_there?: false}}
   end
 
   @impl GenServer
-  def handle_call({:read, _timeout, _power}, _from, %{read_in_progress?: true} = state) do
+  def handle_call(:read, _from, %{read_in_progress?: true} = state) do
     {:reply, {:error, :read_error}, state}
   end
 
-  def handle_call({:read, _clk_pin, _data_pin}, from, state) do
-    pid = self()
-    ref = make_ref()
+  def handle_call(:read, from, state) do
+    weight = read_raw_data_mean(state)
+    {:ok, weight} = handle_weight(weight)
+    something_there = weight > state.weight_before
 
-    spawn(fn -> send(pid, {:handle_weight, read_raw_data_mean(state), ref}) end)
-    Process.send_after(self(), {:timeout, from}, @read_timeout)
+    new_state = %{
+      state
+      | weight_currently: weight,
+        something_there?: something_there,
+        read_in_progress?: false
+    }
 
-    {:noreply, %{state | read_in_progress?: true, ref: ref}}
+    GenServer.reply(from, new_state)
+
+    {:noreply, new_state}
   end
 
   @impl GenServer
-  def handle_info({:timeout, _from}, %{weight: nil} = state) do
-    # GenServer.reply(from, {:error, %ReadTimeoutError{}})
+  def handle_info({:timeout, from}, %{weight: nil} = state) do
+    GenServer.reply(from, {:error, %ReadTimeoutError{}})
 
     {:noreply, reset(state)}
   end
 
   @impl GenServer
   def handle_info({:timeout, from}, state) do
-    weight = handle_weight(state.weight)
+    weight = handle_weight(state.weight_currently)
     GenServer.reply(from, weight)
 
     {:noreply, reset(state)}
-  end
-
-  def handle_info({:handle_weight, _weight}, state) do
-    weight = handle_weight(state.weight)
-    # GenServer.reply(from, weight)
-    {:noreply, %{state | weight: weight, read_in_progress?: false}}
-  end
-
-  @impl GenServer
-  def handle_info({:handle_weight, weight, ref}, %{ref: ref} = state) do
-    {:noreply, %{state | weight: weight}}
-  end
-
-  def handle_info({:handle_weight, _weight, _ref}, state) do
-    {:noreply, state}
   end
 
   defp handle_weight({:ok, weight}) do
     {:ok, weight}
   end
 
-  defp handle_weight(weight) do
-    # {:error, %ReadError{}}
-    {:error, weight}
+  defp handle_weight(_weight) do
+    {:error, %ReadError{}}
   end
 
   def set_clock_high_and_low(state) do
@@ -190,12 +178,8 @@ defmodule Hx711Ex.WeightSensor do
         # Left shift by one bit then bitwise OR with the new bit.
 
         read_data = read_pin(state.data_pin)
-
         left_shifted_data = acc <<< 1
-
-        bitwised_or = left_shifted_data ||| read_data
-
-        bitwised_or
+        left_shifted_data ||| read_data
       end)
 
     # need to repulse
@@ -208,6 +192,7 @@ defmodule Hx711Ex.WeightSensor do
     # 0x7fffff is the highest possible value from hx711
     # 0x800000 is the lowest possible value from hx711
     if data_in == 0x7FFFFF || data_in == 0x800000 do
+      IO.inspect("ERROR! Value is wrong!")
     end
 
     # 0b1000 0000 0000 0000 0000 0000 check if the sign bit is 1. Negative number.
