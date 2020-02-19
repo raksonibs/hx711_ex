@@ -1,6 +1,10 @@
 defmodule Hx711Ex.WeightSensor do
   @moduledoc """
   Read the weight before and difference afterwards, compare if reader returned correctly
+
+  {:ok, init_state} = Hx711Ex.WeightSensor.init([])
+
+  {:ok, weight} = Hx711Ex.WeightSensor.read_raw_data_mean(init_state)
   """
 
   use GenServer
@@ -63,6 +67,7 @@ defmodule Hx711Ex.WeightSensor do
     opts = Keyword.put_new(opts, :number_of_pulses, @num_pulses)
 
     state = struct(State, opts)
+    reset(state)
 
     {:ok, state}
   end
@@ -171,12 +176,17 @@ defmodule Hx711Ex.WeightSensor do
   end
 
   def convert_twos_complement_24_bit(data_in) do
-    # -(data &&& 0x800000) + (data & 0x7fffff)
+    second_twos = -(data_in &&& 0x800000) + (data_in &&& 0x7FFFFF)
+    converted = -((data_in ^^^ 0xFFFFFF) + 1)
+    converted_two = -((data_in ^^^ 0x7FFFFF) + 1)
     IO.inspect("data_in")
     IO.inspect(data_in)
-    converted = -((data_in ^^^ 0xFFFFFF) + 1)
     IO.inspect("converted")
     IO.inspect(converted)
+    IO.inspect("second_twos")
+    IO.inspect(second_twos)
+    IO.inspect("converted_two")
+    IO.inspect(converted_two)
     converted
   end
 
@@ -192,6 +202,8 @@ defmodule Hx711Ex.WeightSensor do
 
       # Shift the bits as they come to data_in variable.
       # Left shift by one bit then bitwise OR with the new bit.
+      IO.inspect("acc")
+      IO.inspect(acc)
       read_data = read_pin(state.data_pin)
       IO.inspect("read_data")
       IO.inspect(read_data)
@@ -225,8 +237,13 @@ defmodule Hx711Ex.WeightSensor do
 
     signed_data =
       case data_in &&& 0x800000 do
-        true -> convert_twos_complement_24_bit(data_in)
-        _ -> data_in
+        true ->
+          IO.inspect("converting in twos")
+          convert_twos_complement_24_bit(data_in)
+
+        _ ->
+          IO.inspect("nonconverting in twos")
+          data_in
       end
 
     IO.inspect("signed_data after_twos_complement")
@@ -246,14 +263,19 @@ defmodule Hx711Ex.WeightSensor do
         acc ++ [signed_data]
       end)
 
+    IO.inspect("all_readings")
+    IO.inspect(all_readings)
+
     total =
       all_readings
       |> Enum.reduce(0, fn reading, acc ->
         acc + reading
       end)
 
+    IO.inspect("total")
     IO.inspect(total)
     mean = total / (all_readings |> length())
+    IO.inspect("mean")
     IO.inspect(mean)
 
     {:ok, mean}
