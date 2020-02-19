@@ -20,7 +20,7 @@ defmodule Hx711Ex.WeightSensor do
   @data_pin 24
   @sleep_time 1_000_000
   @read_timeout 2_000
-  @readings_number 24
+  @readings_number 10
   @num_pulses 1
 
   defmodule State do
@@ -78,13 +78,7 @@ defmodule Hx711Ex.WeightSensor do
     {:reply, {:error, :read_error}, state}
   end
 
-  def handle_call({:read, clk_pin, data_pin}, from, state) do
-    IO.inspect("clk_pin")
-    IO.inspect(clk_pin)
-    IO.inspect("data_pin")
-    IO.inspect(data_pin)
-    IO.inspect("state")
-    IO.inspect(state)
+  def handle_call({:read, _clk_pin, _data_pin}, from, state) do
     pid = self()
     ref = make_ref()
 
@@ -109,9 +103,7 @@ defmodule Hx711Ex.WeightSensor do
     {:noreply, reset(state)}
   end
 
-  def handle_info({:handle_weight, weight}, state) do
-    IO.inspect("RESULT IS")
-    IO.inspect(weight)
+  def handle_info({:handle_weight, _weight}, state) do
     weight = handle_weight(state.weight)
     # GenServer.reply(from, weight)
     {:noreply, %{state | weight: weight, read_in_progress?: false}}
@@ -177,17 +169,9 @@ defmodule Hx711Ex.WeightSensor do
   end
 
   def convert_twos_complement_24_bit(data_in) do
-    second_twos = -(data_in &&& 0x800000) + (data_in &&& 0x7FFFFF)
+    # second_twos = -(data_in &&& 0x800000) + (data_in &&& 0x7FFFFF)
+    # converted_two = -((data_in ^^^ 0x7FFFFF) + 1)
     converted = -((data_in ^^^ 0xFFFFFF) + 1)
-    converted_two = -((data_in ^^^ 0x7FFFFF) + 1)
-    IO.inspect("data_in")
-    IO.inspect(data_in)
-    IO.inspect("converted")
-    IO.inspect(converted)
-    IO.inspect("second_twos")
-    IO.inspect(second_twos)
-    IO.inspect("converted_two")
-    IO.inspect(converted_two)
     converted
   end
 
@@ -197,26 +181,22 @@ defmodule Hx711Ex.WeightSensor do
 
     data_in = 0
     # 24 is used in all instances, as number of bits in data, need to pad out and convert.
-    0..24
-    |> Enum.reduce(data_in, fn _item, acc ->
-      set_clock_high_and_low(state)
+    data_in =
+      0..24
+      |> Enum.reduce(data_in, fn _item, acc ->
+        set_clock_high_and_low(state)
 
-      # Shift the bits as they come to data_in variable.
-      # Left shift by one bit then bitwise OR with the new bit.
-      IO.inspect("acc")
-      IO.inspect(acc)
-      read_data = read_pin(state.data_pin)
-      IO.inspect("read_data")
-      IO.inspect(read_data)
-      left_shifted_data = acc <<< 2
-      IO.inspect("left_shifted_data")
-      IO.inspect(left_shifted_data)
-      bitwised_or = left_shifted_data ||| read_data
+        # Shift the bits as they come to data_in variable.
+        # Left shift by one bit then bitwise OR with the new bit.
 
-      IO.inspect("bitwised_or")
-      IO.inspect(bitwised_or)
-      bitwised_or
-    end)
+        read_data = read_pin(state.data_pin)
+
+        left_shifted_data = acc <<< 1
+
+        bitwised_or = left_shifted_data ||| read_data
+
+        bitwised_or
+      end)
 
     # need to repulse
     0..state.num_pulses
@@ -228,27 +208,19 @@ defmodule Hx711Ex.WeightSensor do
     # 0x7fffff is the highest possible value from hx711
     # 0x800000 is the lowest possible value from hx711
     if data_in == 0x7FFFFF || data_in == 0x800000 do
-      IO.inspect("error max data")
     end
 
     # 0b1000 0000 0000 0000 0000 0000 check if the sign bit is 1. Negative number.
     #  needs to be the 24th bit, if that is set, we know the value is negative!!!
-    IO.inspect("data_in after_twos_complement")
-    IO.inspect(data_in)
 
     signed_data =
       case data_in &&& 0x800000 do
         true ->
-          IO.inspect("converting in twos")
           convert_twos_complement_24_bit(data_in)
 
         _ ->
-          IO.inspect("nonconverting in twos")
           data_in
       end
-
-    IO.inspect("signed_data after_twos_complement")
-    IO.inspect(signed_data)
 
     # {:ok, %{state | signed_data: signed_data}}
     {:ok, signed_data}
@@ -259,13 +231,8 @@ defmodule Hx711Ex.WeightSensor do
       0..state.number_of_readings
       |> Enum.reduce([], fn _reading, acc ->
         {:ok, signed_data} = read_raw_data(state)
-        IO.inspect("signed_data read_raw_data_mean")
-        IO.inspect(signed_data)
         acc ++ [signed_data]
       end)
-
-    IO.inspect("all_readings")
-    IO.inspect(all_readings)
 
     total =
       all_readings
@@ -273,11 +240,7 @@ defmodule Hx711Ex.WeightSensor do
         acc + reading
       end)
 
-    IO.inspect("total")
-    IO.inspect(total)
     mean = total / (all_readings |> length())
-    IO.inspect("mean")
-    IO.inspect(mean)
 
     {:ok, mean}
   end
