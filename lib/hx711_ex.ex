@@ -172,7 +172,12 @@ defmodule Hx711Ex.WeightSensor do
 
   def convert_twos_complement_24_bit(data_in) do
     # -(data &&& 0x800000) + (data & 0x7fffff)
-    -((data_in ^^^ 0xFFFFFF) + 1)
+    IO.inspect("data_in")
+    IO.inspect(data_in)
+    converted = -((data_in ^^^ 0xFFFFFF) + 1)
+    IO.inspect("converted")
+    IO.inspect(converted)
+    converted
   end
 
   def read_raw_data(state) do
@@ -188,8 +193,16 @@ defmodule Hx711Ex.WeightSensor do
       # Shift the bits as they come to data_in variable.
       # Left shift by one bit then bitwise OR with the new bit.
       read_data = read_pin(state.data_pin)
+      IO.inspect("read_data")
+      IO.inspect(read_data)
       left_shifted_data = acc <<< 2
-      left_shifted_data ||| read_data
+      IO.inspect("left_shifted_data")
+      IO.inspect(left_shifted_data)
+      bitwised_or = left_shifted_data ||| read_data
+
+      IO.inspect("bitwised_or")
+      IO.inspect(bitwised_or)
+      bitwised_or
     end)
 
     # need to repulse
@@ -207,11 +220,17 @@ defmodule Hx711Ex.WeightSensor do
 
     # 0b1000 0000 0000 0000 0000 0000 check if the sign bit is 1. Negative number.
     #  needs to be the 24th bit, if that is set, we know the value is negative!!!
+    IO.inspect("data_in after_twos_complement")
+    IO.inspect(data_in)
+
     signed_data =
       case data_in &&& 0x800000 do
         true -> convert_twos_complement_24_bit(data_in)
         _ -> data_in
       end
+
+    IO.inspect("signed_data after_twos_complement")
+    IO.inspect(signed_data)
 
     # {:ok, %{state | signed_data: signed_data}}
     {:ok, signed_data}
@@ -222,6 +241,8 @@ defmodule Hx711Ex.WeightSensor do
       0..state.number_of_readings
       |> Enum.reduce([], fn _reading, acc ->
         {:ok, signed_data} = read_raw_data(state)
+        IO.inspect("signed_data read_raw_data_mean")
+        IO.inspect(signed_data)
         acc ++ [signed_data]
       end)
 
