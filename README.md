@@ -1,6 +1,15 @@
 # Hx711Ex
 
-**TODO: Add description**
+This is an elixir implementation of the Hx711 24-bit Analog to Digital Converter. It currently only outputs resistance values, non-normalized to any units or weights of measurement.
+
+To use it, the interface is simple:
+
+```
+{:ok, init_state} = Hx711Ex.WeightSensor.init([clk_pin: 20, data_pin: 3])
+{:ok, weight} = Hx711Ex.WeightSensor.read_raw_data_mean(init_state)
+
+IO.inspect weight
+ ```
 
 ## Installation
 
